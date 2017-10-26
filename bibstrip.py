@@ -9,6 +9,8 @@ REMOVE_FIELDS_HELP = (
     'Comma-separated list of fields to remove. '
     'Default: {}'.format(REMOVE_FIELDS)
     )
+DONT_SORT_HELP = ('Do not sort entries. By default, entries are sorted in '
+                  "ascending 'label' order.")
 
 
 # Avoid closing default file descriptors
@@ -46,20 +48,35 @@ parser.add_argument(
 parser.add_argument(
     '-f', '--remove-fields', default=REMOVE_FIELDS, type=str,
     help=REMOVE_FIELDS_HELP)
+parser.add_argument(
+    '--dont-sort', action='store_true', help=DONT_SORT_HELP)
 
 args = parser.parse_args()
 infile = args.infile
 outfile = args.outfile
 remove_fields = args.remove_fields.split(',')
 remove_fields = tuple(s.strip() for s in remove_fields)
+sort = not args.dont_sort
 
 
-def next_entry_lines(file):
+def next_entry_lines(iterable):
+    """Read next BibTeX entry from an iterable and return it as string tuple.
+
+    Parameters
+    ----------
+    iterable :
+        Any iterable object.
+
+    Returns
+    -------
+    lines : tuple of str
+        The lines corresponding to the next BibTeX entry.
+    """
     in_entry = False
     num_open_braces = 0
     lines = []
 
-    for line in file:
+    for line in iterable:
         if line.startswith('@') and not in_entry:
             # New entry
             in_entry = True
@@ -79,6 +96,21 @@ def next_entry_lines(file):
 
 
 def group_entries(entry_lines):
+    """Create an ordered dict from lines of a BibTeX entry.
+
+    Parameters
+    ----------
+    entry_lines : sequence of str
+        Strings constituting a BibTeX entry. Usually the return value of
+        ``next_entry_lines``.
+
+    Returns
+    -------
+    grouped : OrderedDict
+        Dictionary whose keys are the field names in the BibTeX source
+        (e.g. ``'author'`` or ``'journal'``), and whose values are the
+        contents of the respective fields.
+    """
     entry_dict = OrderedDict()
     num_open_braces = 1
     skip_key = False
@@ -117,6 +149,18 @@ def group_entries(entry_lines):
 
 
 def dump_entry(entry_dict, file):
+    """Write a BibTeX entry given as a dict to a file.
+
+    Parameters
+    ----------
+    entry_dict : dict
+        Dictionary whose keys are the field names in the BibTeX source
+        (e.g. ``'author'`` or ``'journal'``), and whose values are the
+        contents of the respective fields. Usually the return value of
+        ``group_entries``.
+    file : file-like object
+        The entry is written to this object with the ``writelines`` method.
+    """
     lines = []
     firstline = ('@' + entry_dict['entry_type'] +
                  '{' + entry_dict['label'] + ',\n')
@@ -133,17 +177,37 @@ def dump_entry(entry_dict, file):
     file.writelines(lines)
 
 
-count = 0
-with infile as f_in, outfile as f_out:
-    while True:
-        entry_lines = next_entry_lines(f_in)
-        if not entry_lines:
-            break
-        entry_dict = group_entries(entry_lines)
-        dump_entry(entry_dict, f_out)
-        count += 1
+if sort:
+    # Put all entry dicts into a list, sort it, and dump it to the output file
+    entries = []
+    with infile as f_in:
+        while True:
+            entry_lines = next_entry_lines(f_in)
+            if not entry_lines:
+                break
+            entry_dict = group_entries(entry_lines)
+            entries.append(entry_dict)
+
+    count = len(entries)
+    sorted_entries = sorted(entries, key=lambda entry: entry['label'])
+    with outfile as f_out:
+        for entry in sorted_entries:
+            dump_entry(entry, f_out)
+
+else:
+    # Process entries one-by-one, dumping them immediately
+    count = 0
+    with infile as f_in, outfile as f_out:
+        while True:
+            entry_lines = next_entry_lines(f_in)
+            if not entry_lines:
+                break
+            entry_dict = group_entries(entry_lines)
+            dump_entry(entry_dict, f_out)
+            count += 1
 
 
+# Print some info to the user
 infile_name = 'stdin' if infile == stdin else infile.name
 outfile_name = 'stdout' if outfile == stdout else outfile.name
 print('{} entries read from {} and written to {}'.format(count, infile_name,
